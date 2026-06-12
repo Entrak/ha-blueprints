@@ -1,0 +1,154 @@
+blueprint:
+  name: Smart Plantekasse Vanning (Pulserende) v2 - Robust
+  description: |
+    Forbedret versjon med mer robust templating for boksetiketter og fuktighetsvisning.
+    Samme logikk som før, men bedre feilhåndtering hvis sensor-navn eller state er uventet.
+  domain: automation
+  input:
+    moisture_sensor:
+      name: Fuktighetssensor
+      description: Velg fuktighetssensoren for denne plantekassen
+      selector:
+        entity:
+          domain: sensor
+          filter:
+            - entity_id: "*fuktighetssensor*soil_moisture*"
+
+    relay:
+      name: Magnetventil / Relay
+      description: Velg releet som styrer magnetventilen for denne kassen
+      selector:
+        entity:
+          domain: switch
+
+    watering_enabled:
+      name: "Vanning aktivert (helper)"
+      description: Velg din input_boolean for denne kassen
+      selector:
+        entity:
+          domain: input_boolean
+
+    target_moisture:
+      name: Mål fuktighet (%)
+      default: 75
+      selector:
+        number:
+          min: 50
+          max: 95
+          step: 1
+          unit_of_measurement: "%"
+          mode: slider
+
+    max_cycles:
+      name: Maks antall vanningspulser (sikkerhet)
+      default: 12
+      selector:
+        number:
+          min: 3
+          max: 30
+          step: 1
+          mode: box
+
+    pulse_on_seconds:
+      name: Puls lengde (sekunder på)
+      default: 20
+      selector:
+        number:
+          min: 5
+          max: 60
+          step: 5
+          unit_of_measurement: "s"
+          mode: slider
+
+    soak_minutes:
+      name: Soak tid (minutter av)
+      default: 15
+      selector:
+        number:
+          min: 5
+          max: 30
+          step: 5
+          unit_of_measurement: "min"
+          mode: slider
+
+trigger:
+  - platform: numeric_state
+    entity_id: !input moisture_sensor
+    below: 65
+    for:
+      minutes: 20
+
+conditions:
+  - condition: state
+    entity_id: input_boolean.automatic_watering_system
+    state: "on"
+  - condition: state
+    entity_id: !input watering_enabled
+    state: "on"
+
+variables:
+  moisture_sensor: !input moisture_sensor
+  relay: !input relay
+  target: !input target_moisture
+  max_cycles: !input max_cycles
+  pulse_seconds: !input pulse_on_seconds
+  soak_minutes: !input soak_minutes
+
+  # === ROBUST BOKS-LABEL (bruker regex) ===
+  box_number: >-
+    {% set match = moisture_sensor | regex_findall('fuktighetssensor_(\d+)') %}
+    {{ match[0] if match else '??' }}
+
+  notification_id: "watering_{{ moisture_sensor | replace('sensor.', '') | replace('_soil_moisture', '') }}"
+
+actions:
+  - action: persistent_notification.create
+    data:
+      notification_id: "{{ notification_id }}"
+      title: "🌱 Plantekasse {{ box_number }} - Vanning startet"
+      message: >
+        Sensor: {{ moisture_sensor }}
+        Jordfuktighet har vært under 65% i 20 minutter.
+        Starter pulserende vanning ({{ pulse_seconds }}s på / {{ soak_minutes }}min av).
+        Mål: {{ target }}%. Maks {{ max_cycles }} sykluser.
+
+  - repeat:
+      while:
+        - condition: template
+          value_template: >
+            {{ states(moisture_sensor) | float('unknown') | float(0) < target }}
+        - condition: template
+          value_template: "{{ repeat.index <= max_cycles }}"
+      sequence:
+        - action: switch.turn_on
+          target:
+            entity_id: "{{ relay }}"
+        - delay:
+            seconds: "{{ pulse_seconds }}"
+        - action: switch.turn_off
+          target:
+            entity_id: "{{ relay }}"
+        - delay:
+            minutes: "{{ soak_minutes }}"
+        - action: persistent_notification.create
+          data:
+            notification_id: "{{ notification_id }}"
+            title: "🌱 Plantekasse {{ box_number }} - Vanning pågår (syklus {{ repeat.index }})"
+            message: >
+              Nåværende fuktighet: {{ states(moisture_sensor) | float('unknown') | round(1, default=0) }}%
+              (mål {{ target }}%).
+              Sensor: {{ moisture_sensor }}
+              Puls #{{ repeat.index }} fullført. Fortsetter...
+
+  - action: persistent_notification.create
+    data:
+      notification_id: "{{ notification_id }}"
+      title: "✅ Plantekasse {{ box_number }} - Vanning fullført"
+      message: >
+        Jordfuktighet nå {{ states(moisture_sensor) | float('unknown') | round(1, default=0) }}% 
+        (mål var {{ target }}%).
+        Fullført etter {{ repeat.index - 1 }} pulser.
+        {% if repeat.index > max_cycles %}⚠️ Maks sykluser nådd – sjekk sensor/ventil!{% endif %}
+        Sensor: {{ moisture_sensor }}
+
+mode: single
