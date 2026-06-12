@@ -12,7 +12,7 @@ blueprint:
         entity:
           domain: sensor
           filter:
-            - entity_id: "*fuktighetssensor*soil_moisture*"
+            entity_id: "*fuktighetssensor*soil_moisture*"
 
     relay:
       name: Magnetventil / Relay
